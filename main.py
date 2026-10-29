@@ -23,11 +23,10 @@ def load(tab_name):
 # 2. Зареждане
 env = load("env_raw")
 
-# Почистване на Timestamp (заместваме запетаите с точки при нужда и преобразуваме)
-env["timestamp"] = env["timestamp"].astype(str).str.replace(",", ".")
-env["timestamp"] = pd.to_datetime(env["timestamp"], dayfirst=True, errors="coerce")
+# Безопасно парсване на датите (изчистваме излишни интервали и опитваме универсално разпознаване)
+env["timestamp"] = pd.to_datetime(env["timestamp"].astype(str).str.strip(), errors="coerce")
 
-# Конвертиране на числените колони
+# Конвертиране на числените колони (заменяме запетаи с точки, ако има такива)
 for col in ["temperature", "humidity", "light"]:
     if col in env.columns:
         env[col] = (
@@ -42,69 +41,69 @@ if "led" in env.columns:
 else:
     env["led_is_on"] = False
 
-# Премахваме редове с липсващи ключови стойности
-env = env.dropna(subset=["timestamp", "temperature", "humidity", "light"])
+# Премахваме само редове, където няма дата или температура
+env = env.dropna(subset=["timestamp", "temperature"])
 
-# 3. Базово филтриране на аномалии
+# 3. Почистване без агресивни филтри, за да не останем с 0 реда
 n0 = len(env)
-env = env[
-    env["humidity"].between(10, 95) & env["temperature"].between(10, 40)
-]
 env = env.drop_duplicates("timestamp").sort_values("timestamp")
 print(f"Оставени {len(env)} от {n0} реда след почистване.")
 
-# 4. Resampling на 5-минутни интервали
-env5 = (
-    env.set_index("timestamp")[["temperature", "humidity", "light", "led_is_on"]]
-    .resample("5min")
-    .agg({
-        "temperature": "mean",
-        "humidity": "mean",
-        "light": "mean",
-        "led_is_on": "any"
-    })
-    .reset_index()
-)
+# Проверка дали имаме данни преди да продължим с resampling
+if len(env) == 0:
+    print("Внимание: Няма намерени валидни данни за обработка в 'env_raw'!")
+else:
+    # 4. Resampling на 5-минутни интервали
+    env5 = (
+        env.set_index("timestamp")[["temperature", "humidity", "light", "led_is_on"]]
+        .resample("5min")
+        .agg({
+            "temperature": "mean",
+            "humidity": "mean",
+            "light": "mean",
+            "led_is_on": "any"
+        })
+        .reset_index()
+    )
 
-# ПРЕМАХНАЛИ СМЕ ФИЛТЪРА ЗА НОЩНИ ЧАСОВЕ (21:00-10:00), за да обхванем дневните тестове!
-env5["date"] = env5["timestamp"].dt.date
+    env5["date"] = env5["timestamp"].dt.date
 
-# 5. Групиране и статистики
-g = env5.groupby("date")
+    # 5. Групиране и статистики
+    g = env5.groupby("date")
 
-stats = pd.DataFrame({
-    "temp_mean": g["temperature"].mean(),
-    "temp_min": g["temperature"].min(),
-    "temp_max": g["temperature"].max(),
-    "temp_stability_std": g["temperature"].std(),
-    "hum_mean": g["humidity"].mean(),
-    "comfort_score_pct": g.apply(
-        lambda df: (
-            ((df["temperature"].between(IDEAL_TEMP_MIN, IDEAL_TEMP_MAX)) & 
-             (df["humidity"].between(IDEAL_HUM_MIN, IDEAL_HUM_MAX))).sum() / len(df) * 100
-        ) if len(df) > 0 else 0
-    ),
-    "out_of_comfort_min": g["temperature"].apply(
-        lambda s: ((s < IDEAL_TEMP_MIN) | (s > IDEAL_TEMP_MAX)).sum() * 5
-    ),
-    "darkness_min": g["light"].apply(lambda s: (s < LIGHT_THRESHOLD).sum() * 5),
-    "led_on_min": g["led_is_on"].apply(lambda val: val.sum() * 5 if hasattr(val, 'sum') else 0),
-}).reset_index()
+    stats = pd.DataFrame({
+        "temp_mean": g["temperature"].mean(),
+        "temp_min": g["temperature"].min(),
+        "temp_max": g["temperature"].max(),
+        "temp_stability_std": g["temperature"].std(),
+        "hum_mean": g["humidity"].mean(),
+        "comfort_score_pct": g.apply(
+            lambda df: (
+                ((df["temperature"].between(IDEAL_TEMP_MIN, IDEAL_TEMP_MAX)) & 
+                 (df["humidity"].between(IDEAL_HUM_MIN, IDEAL_HUM_MAX))).sum() / len(df) * 100
+            ) if len(df) > 0 else 0
+        ),
+        "out_of_comfort_min": g["temperature"].apply(
+            lambda s: ((s < IDEAL_TEMP_MIN) | (s > IDEAL_TEMP_MAX)).sum() * 5
+        ),
+        "darkness_min": g["light"].apply(lambda s: (s < LIGHT_THRESHOLD).sum() * 5),
+        "led_on_min": g["led_is_on"].apply(lambda val: val.sum() * 5 if hasattr(val, 'sum') else 0),
+    }).reset_index()
 
-print("\nРезултати от тестовите данни:")
-print(stats)
+    print("\nРезултати от тестовите данни:")
+    print(stats)
 
-# 6. Запис в листа "presentable"
-stats["date"] = stats["date"].astype(str)
-values = (
-    stats.round(2).astype(object).where(stats.notna(), "").values.tolist()
-)
+    # 6. Запис в листа "presentable"
+    stats["date"] = stats["date"].astype(str)
+    values = (
+        stats.round(2).astype(object).where(stats.notna(), "").values.tolist()
+    )
 
-try:
-    ws = sh.worksheet("presentable")
-except gspread.WorksheetNotFound:
-    ws = sh.add_worksheet("presentable", rows=100, cols=20)
+    try:
+        ws = sh.worksheet("presentable")
+    except gspread.WorksheetNotFound:
+        ws = sh.add_worksheet("presentable", rows=100, cols=20)
 
-ws.clear()
-ws.update([stats.columns.tolist()] + values)
-print("Данните бяха успешно обработени и изпратени в 'presentable'!")
+    ws.clear()
+    ws.update([stats.columns.tolist()] + values)
+    print("Данните бяха успешно обработени и изпратени в 'presentable'!")
