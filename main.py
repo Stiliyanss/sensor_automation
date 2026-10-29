@@ -1,12 +1,16 @@
 import gspread
-import matplotlib.pyplot as plt
 import pandas as pd
 
-# 1. Връзка с Google Sheets чрез Service Account
+# 1. Връзка с Google Sheets
 gc = gspread.service_account(filename="service_account.json")
-# Отваряме spreadsheet файла по точното му име в Google Drive
-sh = gc.open("Sleep monitoring data") 
+sh = gc.open("Sleep monitoring data")
 
+# Персонализирани прагове (за тест)
+IDEAL_TEMP_MIN = 19.0
+IDEAL_TEMP_MAX = 22.0
+IDEAL_HUM_MIN = 40.0
+IDEAL_HUM_MAX = 60.0
+LIGHT_THRESHOLD = 26.0
 
 def load(tab_name):
     rows = sh.worksheet(tab_name).get_all_values(
@@ -16,66 +20,84 @@ def load(tab_name):
         rows[1:], columns=[str(c).strip().lower() for c in rows[0]]
     )
 
-
-# 2. Зареждане и тикове
+# 2. Зареждане
 env = load("env_raw")
-env["timestamp"] = pd.to_datetime(
-    pd.to_numeric(env["timestamp"], errors="coerce"),
-    unit="D",
-    origin="1899-12-30",
-).dt.round("s")
 
+# Почистване на Timestamp (заместваме запетаите с точки при нужда и преобразуваме)
+env["timestamp"] = env["timestamp"].astype(str).str.replace(",", ".")
+env["timestamp"] = pd.to_datetime(env["timestamp"], dayfirst=True, errors="coerce")
+
+# Конвертиране на числените колони
 for col in ["temperature", "humidity", "light"]:
-    env[col] = pd.to_numeric(env[col], errors="coerce")
+    if col in env.columns:
+        env[col] = (
+            env[col]
+            .astype(str)
+            .str.replace(",", ".")
+            .pipe(pd.to_numeric, errors="coerce")
+        )
 
+if "led" in env.columns:
+    env["led_is_on"] = env["led"].astype(str).str.upper().isin(["ON", "1", "TRUE", "YES"])
+else:
+    env["led_is_on"] = False
+
+# Премахваме редове с липсващи ключови стойности
 env = env.dropna(subset=["timestamp", "temperature", "humidity", "light"])
 
-# 3. Почистване
-START = pd.Timestamp("2026-10-09 13:50")
+# 3. Базово филтриране на аномалии
 n0 = len(env)
-env = env[env["timestamp"] >= START]
 env = env[
-    env["humidity"].between(20, 90) & env["temperature"].between(10, 35)
+    env["humidity"].between(10, 95) & env["temperature"].between(10, 40)
 ]
 env = env.drop_duplicates("timestamp").sort_values("timestamp")
 print(f"Оставени {len(env)} от {n0} реда след почистване.")
 
-# 4. 5-минутни средни
+# 4. Resampling на 5-минутни интервали
 env5 = (
-    env.set_index("timestamp")[["temperature", "humidity", "light"]]
+    env.set_index("timestamp")[["temperature", "humidity", "light", "led_is_on"]]
     .resample("5min")
-    .mean()
+    .agg({
+        "temperature": "mean",
+        "humidity": "mean",
+        "light": "mean",
+        "led_is_on": "any"
+    })
     .reset_index()
 )
 
-# 5. Нощни часове (21:00 - 10:00)
-h = env5["timestamp"].dt.hour
-env5 = env5[(h >= 21) | (h < 10)].copy()
-env5["night"] = (env5["timestamp"] - pd.Timedelta(hours=12)).dt.date
+# ПРЕМАХНАЛИ СМЕ ФИЛТЪРА ЗА НОЩНИ ЧАСОВЕ (21:00-10:00), за да обхванем дневните тестове!
+env5["date"] = env5["timestamp"].dt.date
 
-# 6. Статистика
-LIGHT_THRESHOLD = 26
-g = env5.groupby("night")
+# 5. Групиране и статистики
+g = env5.groupby("date")
 
-nightly = pd.DataFrame({
+stats = pd.DataFrame({
     "temp_mean": g["temperature"].mean(),
     "temp_min": g["temperature"].min(),
     "temp_max": g["temperature"].max(),
+    "temp_stability_std": g["temperature"].std(),
     "hum_mean": g["humidity"].mean(),
-    "bright_min": g["light"].apply(lambda s: (s < LIGHT_THRESHOLD).sum() * 5),
-    "out_of_range_min": g["temperature"].apply(
-        lambda s: ((s < 17) | (s > 20)).sum() * 5
+    "comfort_score_pct": g.apply(
+        lambda df: (
+            ((df["temperature"].between(IDEAL_TEMP_MIN, IDEAL_TEMP_MAX)) & 
+             (df["humidity"].between(IDEAL_HUM_MIN, IDEAL_HUM_MAX))).sum() / len(df) * 100
+        ) if len(df) > 0 else 0
     ),
-    "missing_min": g["temperature"].apply(lambda s: s.isna().sum() * 5),
+    "out_of_comfort_min": g["temperature"].apply(
+        lambda s: ((s < IDEAL_TEMP_MIN) | (s > IDEAL_TEMP_MAX)).sum() * 5
+    ),
+    "darkness_min": g["light"].apply(lambda s: (s < LIGHT_THRESHOLD).sum() * 5),
+    "led_on_min": g["led_is_on"].apply(lambda val: val.sum() * 5 if hasattr(val, 'sum') else 0),
 }).reset_index()
 
-print("\nResults:")
-print(nightly)
+print("\nРезултати от тестовите данни:")
+print(stats)
 
-# 7. Запис в листа "presentable"
-nightly["night"] = nightly["night"].astype(str)
+# 6. Запис в листа "presentable"
+stats["date"] = stats["date"].astype(str)
 values = (
-    nightly.round(2).astype(object).where(nightly.notna(), "").values.tolist()
+    stats.round(2).astype(object).where(stats.notna(), "").values.tolist()
 )
 
 try:
@@ -84,5 +106,5 @@ except gspread.WorksheetNotFound:
     ws = sh.add_worksheet("presentable", rows=100, cols=20)
 
 ws.clear()
-ws.update([nightly.columns.tolist()] + values)
-print("The data was successfuly sent to 'presentable'!")
+ws.update([stats.columns.tolist()] + values)
+print("Данните бяха успешно обработени и изпратени в 'presentable'!")
