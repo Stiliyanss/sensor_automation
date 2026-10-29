@@ -24,8 +24,19 @@ def load(tab_name):
 env = load("env_raw")
 
 # Безопасно парсване на датите (изчистваме излишни интервали и опитваме универсално разпознаване)
-env["timestamp"] = pd.to_datetime(env["timestamp"].astype(str).str.strip(), errors="coerce")
+# Универсално и сигурно парсване на датите от Google Sheets (поддържа DD.MM.YYYY HH:MM:SS)
+env["timestamp"] = env["timestamp"].astype(str).str.strip()
 
+# Опитваме се да ги конвертираме с изрично указване на формат или с гъвкав dateutil
+env["timestamp"] = pd.to_datetime(env["timestamp"], format="%d.%m.%Y %H:%M:%S", errors="coerce")
+
+# Ако случайно някой ред е в друг формат, правим втори опит само за грешните
+mask_NaT = env["timestamp"].isna()
+if mask_NaT.any():
+    env.loc[mask_NaT, "timestamp"] = pd.to_datetime(
+        env.loc[mask_NaT, "timestamp"], dayfirst=True, errors="coerce"
+    )
+    
 # Конвертиране на числените колони (заменяме запетаи с точки, ако има такива)
 for col in ["temperature", "humidity", "light"]:
     if col in env.columns:
