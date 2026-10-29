@@ -24,7 +24,9 @@ jobs:
 
       - name: Create service_account.json from Secret
         run: |
-          echo "${{ secrets.GCP_SA_KEY }}" > service_account.json
+          cat << 'EOF' > service_account.json
+          ${{ secrets.GCP_SA_KEY }}
+          EOF
 
       - name: Run script
         run: |
