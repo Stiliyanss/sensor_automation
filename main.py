@@ -4,16 +4,17 @@ import pandas as pd
 
 # 1. Връзка с Google Sheets чрез Service Account
 gc = gspread.service_account(filename="service_account.json")
-sh = gc.open("env_raw") 
+# Отваряме spreadsheet файла по точното му име в Google Drive
+sh = gc.open("Sleep monitoring data") 
 
 
 def load(tab_name):
-  rows = sh.worksheet(tab_name).get_all_values(
-      value_render_option="UNFORMATTED_VALUE"
-  )
-  return pd.DataFrame(
-      rows[1:], columns=[str(c).strip().lower() for c in rows[0]]
-  )
+    rows = sh.worksheet(tab_name).get_all_values(
+        value_render_option="UNFORMATTED_VALUE"
+    )
+    return pd.DataFrame(
+        rows[1:], columns=[str(c).strip().lower() for c in rows[0]]
+    )
 
 
 # 2. Зареждане и тикове
@@ -25,7 +26,7 @@ env["timestamp"] = pd.to_datetime(
 ).dt.round("s")
 
 for col in ["temperature", "humidity", "light"]:
-  env[col] = pd.to_numeric(env[col], errors="coerce")
+    env[col] = pd.to_numeric(env[col], errors="coerce")
 
 env = env.dropna(subset=["timestamp", "temperature", "humidity", "light"])
 
@@ -78,9 +79,9 @@ values = (
 )
 
 try:
-  ws = sh.worksheet("presentable")
+    ws = sh.worksheet("presentable")
 except gspread.WorksheetNotFound:
-  ws = sh.add_worksheet("presentable", rows=100, cols=20)
+    ws = sh.add_worksheet("presentable", rows=100, cols=20)
 
 ws.clear()
 ws.update([nightly.columns.tolist()] + values)
