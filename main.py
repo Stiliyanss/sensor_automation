@@ -90,6 +90,9 @@ else:
         "led_on_min": g["led_is_on"].apply(lambda val: val.sum() * 5 if hasattr(val, 'sum') else 0),
     }).reset_index()
 
+    # НАЙ-ВАЖНОТО: Оставяме само редовете, в които реално има данни (където temp_mean не е NaN)
+    stats = stats.dropna(subset=["temp_mean"])
+
     print("\nРезултати от тестовите данни:")
     print(stats)
 
