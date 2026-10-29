@@ -5,7 +5,7 @@ import pandas as pd
 gc = gspread.service_account(filename="service_account.json")
 sh = gc.open("Sleep monitoring data")
 
-# Персонализирани прагове (за тест)
+# Персонализирани прагове
 IDEAL_TEMP_MIN = 19.0
 IDEAL_TEMP_MAX = 22.0
 IDEAL_HUM_MIN = 40.0
@@ -16,53 +16,54 @@ def load(tab_name):
     rows = sh.worksheet(tab_name).get_all_values(
         value_render_option="UNFORMATTED_VALUE"
     )
-    return pd.DataFrame(
-        rows[1:], columns=[str(c).strip().lower() for c in rows[0]]
-    )
+    # Превръщаме заглавията в малки букви и премахваме интервалите
+    headers = [str(c).strip().lower() for c in rows[0]]
+    df = pd.DataFrame(rows[1:], columns=headers)
+    return df
 
 # 2. Зареждане
 env = load("env_raw")
+print("Първоначални колони в env_raw:", env.columns.tolist())
+print("Брой сурови редове:", len(env))
 
-# Безопасно парсване на датите (изчистваме излишни интервали и опитваме универсално разпознаване)
-# Универсално и сигурно парсване на датите от Google Sheets (поддържа DD.MM.YYYY HH:MM:SS)
-env["timestamp"] = env["timestamp"].astype(str).str.strip()
+# Намираме коя колона отговаря на timestamp, temperature, humidity, light, led
+# (ако заглавията са с главни букви или различни)
+ts_col = next((c for c in env.columns if 'time' in c), env.columns[0])
+temp_col = next((c for c in env.columns if 'temp' in c), 'temperature')
+hum_col = next((c for c in env.columns if 'hum' in c), 'humidity')
+light_col = next((c for c in env.columns if 'light' in c or 'bright' in c), 'light')
+led_col = next((c for c in env.columns if 'led' in c), None)
 
-# Опитваме се да ги конвертираме с изрично указване на формат или с гъвкав dateutil
-env["timestamp"] = pd.to_datetime(env["timestamp"], format="%d.%m.%Y %H:%M:%S", errors="coerce")
+# Преобразуване на датата
+env["timestamp"] = pd.to_datetime(
+    env[ts_col].astype(str).str.strip(), 
+    dayfirst=True, 
+    errors="coerce"
+)
 
-# Ако случайно някой ред е в друг формат, правим втори опит само за грешните
-mask_NaT = env["timestamp"].isna()
-if mask_NaT.any():
-    env.loc[mask_NaT, "timestamp"] = pd.to_datetime(
-        env.loc[mask_NaT, "timestamp"], dayfirst=True, errors="coerce"
-    )
-    
-# Конвертиране на числените колони (заменяме запетаи с точки, ако има такива)
-for col in ["temperature", "humidity", "light"]:
-    if col in env.columns:
-        env[col] = (
-            env[col]
+# Конвертиране на числените колони
+for c_src, name in [(temp_col, "temperature"), (hum_col, "humidity"), (light_col, "light")]:
+    if c_src in env.columns:
+        env[name] = (
+            env[c_src]
             .astype(str)
             .str.replace(",", ".")
             .pipe(pd.to_numeric, errors="coerce")
         )
 
-if "led" in env.columns:
-    env["led_is_on"] = env["led"].astype(str).str.upper().isin(["ON", "1", "TRUE", "YES"])
+if led_col and led_col in env.columns:
+    env["led_is_on"] = env[led_col].astype(str).str.upper().isin(["ON", "1", "TRUE", "YES"])
 else:
     env["led_is_on"] = False
 
-# Премахваме само редове, където няма дата или температура
+# Почистване
 env = env.dropna(subset=["timestamp", "temperature"])
-
-# 3. Почистване без агресивни филтри, за да не останем с 0 реда
 n0 = len(env)
 env = env.drop_duplicates("timestamp").sort_values("timestamp")
 print(f"Оставени {len(env)} от {n0} реда след почистване.")
 
-# Проверка дали имаме данни преди да продължим с resampling
 if len(env) == 0:
-    print("Внимание: Няма намерени валидни данни за обработка в 'env_raw'!")
+    print("Внимание: Все още няма намерени валидни данни. Проверете имената на колоните в Google Sheets.")
 else:
     # 4. Resampling на 5-минутни интервали
     env5 = (
@@ -101,10 +102,8 @@ else:
         "led_on_min": g["led_is_on"].apply(lambda val: val.sum() * 5 if hasattr(val, 'sum') else 0),
     }).reset_index()
 
-    # НАЙ-ВАЖНОТО: Оставяме само редовете, в които реално има данни (където temp_mean не е NaN)
     stats = stats.dropna(subset=["temp_mean"])
-
-    print("\nРезултати от тестовите данни:")
+    print("\nРезултати:")
     print(stats)
 
     # 6. Запис в листа "presentable"
@@ -120,4 +119,4 @@ else:
 
     ws.clear()
     ws.update([stats.columns.tolist()] + values)
-    print("Данните бяха успешно обработени и изпратени в 'presentable'!")
+    print("Данните бяха успешно записани в 'presentable'!")
