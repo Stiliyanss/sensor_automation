@@ -2,8 +2,8 @@ name: Run Sensor Processing
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # Пуска се всеки ден в 06:00 сутрин (UTC)
-  workflow_dispatch:      # Позволява ти да го пускаш и ръчно от бутона в GitHub
+    - cron: '0 6 * * *'
+  workflow_dispatch:
 
 jobs:
   run-script:
@@ -20,7 +20,7 @@ jobs:
       - name: Install dependencies
         run: |
           pip install --upgrade pip
-          pip install -r requirements.txt
+          pip install gspread pandas matplotlib
 
       - name: Create service_account.json from Secret
         run: |
